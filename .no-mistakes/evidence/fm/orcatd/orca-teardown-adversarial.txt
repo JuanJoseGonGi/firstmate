@@ -1,0 +1,68 @@
+Adversarial worktree ids, driven through the real bin/fm-teardown.sh CLI on this branch.
+Every one must refuse, run no Orca command, and leave the task record in place.
+
+==============================================================
+CASE: no :: separator at all
+orca_worktree_id=worktree-9
+==============================================================
+--- running: bin/fm-teardown.sh orca-live --force ---
+exit=1
+--- stdout ---
+--- stderr ---
+REFUSED: Orca endpoint metadata for task orca-live is malformed or inconsistent; preserving task state.
+--- orca CLI calls firstmate made ---
+--- task record still present? ---
+state/orca-live.meta PRESERVED
+
+==============================================================
+CASE: empty repo-id half
+orca_worktree_id=::@WT@
+==============================================================
+--- running: bin/fm-teardown.sh orca-live --force ---
+exit=1
+--- stdout ---
+--- stderr ---
+REFUSED: Orca endpoint metadata for task orca-live is malformed or inconsistent; preserving task state.
+--- orca CLI calls firstmate made ---
+--- task record still present? ---
+state/orca-live.meta PRESERVED
+
+==============================================================
+CASE: relative path half
+orca_worktree_id=411226f7-dc91-4d37-975d-32d412bf97a2::orca/relative/wt
+==============================================================
+--- running: bin/fm-teardown.sh orca-live --force ---
+exit=1
+--- stdout ---
+--- stderr ---
+REFUSED: Orca endpoint metadata for task orca-live is malformed or inconsistent; preserving task state.
+--- orca CLI calls firstmate made ---
+--- task record still present? ---
+state/orca-live.meta PRESERVED
+
+==============================================================
+CASE: tab character inside the repo-id half
+orca_worktree_id=411226f7	dc91::@WT@
+==============================================================
+--- running: bin/fm-teardown.sh orca-live --force ---
+exit=1
+--- stdout ---
+--- stderr ---
+REFUSED: Orca endpoint metadata for task orca-live is malformed or inconsistent; preserving task state.
+--- orca CLI calls firstmate made ---
+--- task record still present? ---
+state/orca-live.meta PRESERVED
+
+==============================================================
+CASE: well-shaped id that Orca resolves to a DIFFERENT worktree than
+      the one on the task record (the identity guard behind the shape check)
+==============================================================
+--- running: bin/fm-teardown.sh orca-live --force ---
+exit=1
+--- stdout ---
+--- stderr ---
+REFUSED: Orca worktree id 411226f7-dc91-4d37-975d-32d412bf97a2::/Users/fleet/orca/workspaces/other/fm-other resolved to uninspectable path /Users/fleet/orca/workspaces/other/fm-other; preserving metadata.
+--- orca CLI calls firstmate made ---
+orca [worktree] [show] [--worktree] [id:411226f7-dc91-4d37-975d-32d412bf97a2::/Users/fleet/orca/workspaces/other/fm-other] [--json]
+--- task record still present? ---
+state/orca-live.meta PRESERVED

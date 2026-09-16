@@ -1,0 +1,21 @@
+The id shape against the live Orca runtime (orca 1.4.204), read-only.
+
+$ orca worktree list --json   (first worktree, trimmed to the identity fields)
+{
+  "id": "411226f7-dc91-4d37-975d-32d412bf97a2::/Users/juanjosegongi/dev/scrap-services",
+  "repoId": "411226f7-dc91-4d37-975d-32d412bf97a2",
+  "path": "/Users/juanjosegongi/dev/scrap-services"
+}
+
+That is exactly what docs/orca-backend.md now documents: <orca repo id>::<absolute worktree path>.
+
+Firstmate on this branch, handed that real id:
+$ fm_backend_orca_worktree_id_valid "411226f7-dc91-4d37-975d-32d412bf97a2::/Users/juanjosegongi/dev/scrap-services"
+  -> accepted
+
+$ fm_backend_worktree_path orca "411226f7-dc91-4d37-975d-32d412bf97a2::/Users/juanjosegongi/dev/scrap-services"   (resolved through the running Orca)
+  -> /Users/juanjosegongi/dev/scrap-services
+
+The same real id at the base commit 9f8ad95, which is what teardown used to check:
+$ fm_backend_endpoint_atom_valid "411226f7-dc91-4d37-975d-32d412bf97a2::/Users/juanjosegongi/dev/scrap-services"
+  -> REJECTED (this is why teardown refused every Orca task)

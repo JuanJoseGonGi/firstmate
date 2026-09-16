@@ -1,0 +1,49 @@
+Teardown of an Orca-backed task, driven through the real bin/fm-teardown.sh CLI.
+The task record carries the composite worktree id Orca really returns:
+  <repo id>::<absolute worktree path>
+
+==============================================================
+BEFORE the fix (base commit 9f8ad95) - the reported bug
+==============================================================
+--- task record written by the fleet (state/orca-live.meta) ---
+window=fm-orca-live
+endpoint_task_id=orca-live
+terminal=term-live-1
+worktree=<case>/worktree
+project=<case>/project
+backend=orca
+orca_worktree_id=411226f7-dc91-4d37-975d-32d412bf97a2::<case>/worktree
+kind=scout
+--- running: bin/fm-teardown.sh orca-live --force ---
+exit=1
+--- stdout ---
+--- stderr ---
+REFUSED: Orca endpoint metadata for task orca-live is malformed or inconsistent; preserving task state.
+--- orca CLI calls firstmate made ---
+--- task record still present? ---
+state/orca-live.meta PRESERVED
+
+==============================================================
+AFTER the fix (this branch) - same task record, same command
+==============================================================
+--- task record written by the fleet (state/orca-live.meta) ---
+window=fm-orca-live
+endpoint_task_id=orca-live
+terminal=term-live-1
+worktree=<case>/worktree
+project=<case>/project
+backend=orca
+orca_worktree_id=411226f7-dc91-4d37-975d-32d412bf97a2::<case>/worktree
+kind=scout
+--- running: bin/fm-teardown.sh orca-live --force ---
+exit=0
+--- stdout ---
+teardown orca-live complete (window term-live-1, worktree <case>/worktree)
+Backlog: orca-live just finished (this home keeps no markdown backlog at /private<case>/home/data/backlog.md). Update /private<case>/home/data/backlog.md - move orca-live to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+--- stderr ---
+--- orca CLI calls firstmate made ---
+orca [worktree] [show] [--worktree] [id:411226f7-dc91-4d37-975d-32d412bf97a2::<case>/worktree] [--json]
+orca [terminal] [close] [--terminal] [term-live-1] [--json]
+orca [worktree] [rm] [--worktree] [id:411226f7-dc91-4d37-975d-32d412bf97a2::<case>/worktree] [--force] [--json]
+--- task record still present? ---
+state/orca-live.meta REMOVED

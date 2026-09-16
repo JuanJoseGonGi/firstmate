@@ -1,0 +1,76 @@
+Full Orca task lifecycle driven through the real firstmate CLIs:
+bin/fm-spawn.sh --backend orca writes the task record, bin/fm-teardown.sh cleans it up.
+Orca is a recording stand-in that answers with the id shape the live runtime returns.
+
+==============================================================
+BEFORE the fix (base commit 9f8ad95)
+==============================================================
+=== 1. spawn: bin/fm-spawn.sh orcaround1 <project> claude --backend orca ===
+warning: <case>/data/orcaround1/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned orcaround1 harness=claude kind=ship mode=no-mistakes yolo=off window=fm-orcaround1 worktree=<case>/wt
+spawn exit=0
+
+=== 2. the task record firstmate wrote ===
+window=fm-orcaround1
+endpoint_task_id=orcaround1
+worktree=<case>/wt
+project=<case>/project
+harness=claude
+kind=ship
+mode=no-mistakes
+yolo=off
+tasktmp=/tmp/fm-orcaround1
+model=default
+effort=default
+busy_gen=g1789595367.61094.28902
+spawn_gen=s1789595367.60787.9087
+backend=orca
+orca_worktree_id=411226f7-dc91-4d37-975d-32d412bf97a2::<case>/wt
+terminal=term-round-1
+
+=== 3. teardown: bin/fm-teardown.sh orcaround1 --force ===
+REFUSED: Orca endpoint metadata for task orcaround1 is malformed or inconsistent; preserving task state.
+teardown exit=0
+
+=== 4. Orca calls teardown made ===
+=== 5. task record after teardown ===
+state/orcaround1.meta PRESERVED
+
+==============================================================
+AFTER the fix (this branch)
+==============================================================
+=== 1. spawn: bin/fm-spawn.sh orcaround1 <project> claude --backend orca ===
+warning: <case>/data/orcaround1/launch-brief.md records no delivery contract line (scaffolded before ship briefs recorded one); launching on the explicit --mode no-mistakes - confirm its definition of done matches
+spawned orcaround1 harness=claude kind=ship mode=no-mistakes yolo=off window=fm-orcaround1 worktree=<case>/wt
+spawn exit=0
+
+=== 2. the task record firstmate wrote ===
+window=fm-orcaround1
+endpoint_task_id=orcaround1
+worktree=<case>/wt
+project=<case>/project
+harness=claude
+kind=ship
+mode=no-mistakes
+yolo=off
+tasktmp=/tmp/fm-orcaround1
+model=default
+effort=default
+busy_gen=g1789595377.63256.5552
+spawn_gen=s1789595377.62810.10945
+backend=orca
+orca_worktree_id=411226f7-dc91-4d37-975d-32d412bf97a2::<case>/wt
+terminal=term-round-1
+
+=== 3. teardown: bin/fm-teardown.sh orcaround1 --force ===
+<case>/project: skipped: no origin remote
+teardown orcaround1 complete (window term-round-1, worktree <case>/wt)
+Backlog: orcaround1 just finished (this home keeps no markdown backlog at /private<case>/data/backlog.md). Update /private<case>/data/backlog.md - move orcaround1 to Done, keep Done to the 10 most recent, then re-scan Queued and dispatch only work whose blockers are gone and date is due.
+teardown exit=0
+
+=== 4. Orca calls teardown made ===
+orca [worktree] [show] [--worktree] [id:411226f7-dc91-4d37-975d-32d412bf97a2::<case>/wt] [--json]
+orca [terminal] [close] [--terminal] [term-round-1] [--json]
+orca [worktree] [rm] [--worktree] [id:411226f7-dc91-4d37-975d-32d412bf97a2::<case>/wt] [--force] [--json]
+=== 5. task record after teardown ===
+state/orcaround1.meta REMOVED

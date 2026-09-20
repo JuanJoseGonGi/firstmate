@@ -76,39 +76,44 @@ git -C "$FM_ROOT" ls-files --error-unmatch "bin/$COMMAND" >/dev/null 2>&1 \
   || die "remote command is not tracked by this Firstmate checkout: $COMMAND"
 [ -f "$REG" ] && [ ! -L "$REG" ] || die "no safe secondmate registry at $REG"
 
-MATCHES=0
-HOST=
-ROOT=
-HOME_PATH=
-# Exact ids are resolved first, so a record's id always beats another record's
-# coincident host alias on the same machine. Host aliases are consulted only
-# when no id matched; the fail-closed counts still apply within each pass.
+ID_MATCHES=0
+HOST_MATCHES=0
+ID_HOST=
+ID_ROOT=
+ID_HOME=
+ALIAS_HOST=
+ALIAS_ROOT=
+ALIAS_HOME=
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in '- '*) ;; *) continue ;; esac
   secondmate_registry_parse_line "$line" || die "malformed secondmate registry entry: $line"
   [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ] || continue
   if [ "$SECONDMATE_REGISTRY_ID" = "$ROUTE" ]; then
-    MATCHES=$((MATCHES + 1))
-    HOST=$SECONDMATE_REGISTRY_HOST
-    ROOT=$SECONDMATE_REGISTRY_ROOT
-    HOME_PATH=$SECONDMATE_REGISTRY_HOME
+    ID_MATCHES=$((ID_MATCHES + 1))
+    ID_HOST=$SECONDMATE_REGISTRY_HOST
+    ID_ROOT=$SECONDMATE_REGISTRY_ROOT
+    ID_HOME=$SECONDMATE_REGISTRY_HOME
+  elif [ "$SECONDMATE_REGISTRY_HOST" = "$ROUTE" ]; then
+    HOST_MATCHES=$((HOST_MATCHES + 1))
+    ALIAS_HOST=$SECONDMATE_REGISTRY_HOST
+    ALIAS_ROOT=$SECONDMATE_REGISTRY_ROOT
+    ALIAS_HOME=$SECONDMATE_REGISTRY_HOME
   fi
 done < "$REG"
-if [ "$MATCHES" -eq 0 ]; then
-  while IFS= read -r line || [ -n "$line" ]; do
-    case "$line" in '- '*) ;; *) continue ;; esac
-    secondmate_registry_parse_line "$line" || die "malformed secondmate registry entry: $line"
-    [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ] || continue
-    if [ "$SECONDMATE_REGISTRY_HOST" = "$ROUTE" ]; then
-      MATCHES=$((MATCHES + 1))
-      HOST=$SECONDMATE_REGISTRY_HOST
-      ROOT=$SECONDMATE_REGISTRY_ROOT
-      HOME_PATH=$SECONDMATE_REGISTRY_HOME
-    fi
-  done < "$REG"
+if [ "$ID_MATCHES" -gt 0 ]; then
+  [ "$ID_MATCHES" -eq 1 ] \
+    || die "remote route '$ROUTE' is ambiguous across $ID_MATCHES secondmate records sharing that id; give each record a unique id in the registry"
+  HOST=$ID_HOST
+  ROOT=$ID_ROOT
+  HOME_PATH=$ID_HOME
+else
+  [ "$HOST_MATCHES" -gt 0 ] || die "no remote secondmate or SSH alias matches '$ROUTE'"
+  [ "$HOST_MATCHES" -eq 1 ] \
+    || die "remote route '$ROUTE' is ambiguous across $HOST_MATCHES configured secondmates; use a secondmate id"
+  HOST=$ALIAS_HOST
+  ROOT=$ALIAS_ROOT
+  HOME_PATH=$ALIAS_HOME
 fi
-[ "$MATCHES" -gt 0 ] || die "no remote secondmate or SSH alias matches '$ROUTE'"
-[ "$MATCHES" -eq 1 ] || die "remote route '$ROUTE' is ambiguous across $MATCHES configured secondmates; use a secondmate id"
 case "$HOST" in ''|-*|*[!A-Za-z0-9._-]*) die "configured SSH alias is unsafe: $HOST" ;; esac
 case "$ROOT" in /*) ;; *) die "configured remote root is not absolute: $ROOT" ;; esac
 case "$HOME_PATH" in /*) ;; *) die "configured remote home is not absolute: $HOME_PATH" ;; esac

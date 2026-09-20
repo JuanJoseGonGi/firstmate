@@ -516,9 +516,12 @@ cat > "$LOCAL_HOME/data/secondmates.md" <<EOF
 - dup - first delivery (host: remote-mac; root: $REMOTE_ROOT; home: $REMOTE_HOME; scope: dup work; projects: alpha; added 2026-08-02)
 - dup - second delivery (host: other-mac; root: $REMOTE_ROOT; home: $TMP_ROOT/other-remote-home; scope: dup work; projects: beta; added 2026-08-02)
 EOF
-if fm_on dup fm-probe-two.sh >/dev/null 2>&1; then
-  fail "a route matching two secondmate ids was accepted"
-fi
+set +e
+out=$(fm_on dup fm-probe-two.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a route matching two secondmate ids was accepted"
+assert_contains "$out" "sharing that id" "a duplicated secondmate id did not refuse with the duplicate-id advice"
 write_registry
 pass "an exact id beats a coincident same-host alias while genuine id ambiguity still refuses"
 

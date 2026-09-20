@@ -5,10 +5,12 @@
 #   fm-on.sh [--stdin] <secondmate-id|unambiguous-ssh-alias> <fm-command> [args...]
 #
 # Routes come only from remote records in data/secondmates.md. A record names an
-# SSH config alias, remote Firstmate code root, and remote FM_HOME. A host alias
-# may be used directly only when exactly one record selects it; an ambiguous
-# alias is refused. The command must be a genuine executable in this checkout's
-# bin/fm-*.sh namespace. No per-command table exists.
+# SSH config alias, remote Firstmate code root, and remote FM_HOME. An exact
+# secondmate id always wins over any coincident host alias, so id routing is
+# never shadowed by another record on the same machine. A host alias may be used
+# directly only when exactly one record selects it and no id matches; an
+# ambiguous alias is refused. The command must be a genuine executable in this
+# checkout's bin/fm-*.sh namespace. No per-command table exists.
 #
 # argv is encoded as one NUL-delimited stream and passed through the fixed
 # fm-remote-entrypoint.sh. The remote command's stdin is /dev/null by default,
@@ -78,17 +80,33 @@ MATCHES=0
 HOST=
 ROOT=
 HOME_PATH=
+# Exact ids are resolved first, so a record's id always beats another record's
+# coincident host alias on the same machine. Host aliases are consulted only
+# when no id matched; the fail-closed counts still apply within each pass.
 while IFS= read -r line || [ -n "$line" ]; do
   case "$line" in '- '*) ;; *) continue ;; esac
   secondmate_registry_parse_line "$line" || die "malformed secondmate registry entry: $line"
   [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ] || continue
-  if [ "$SECONDMATE_REGISTRY_ID" = "$ROUTE" ] || [ "$SECONDMATE_REGISTRY_HOST" = "$ROUTE" ]; then
+  if [ "$SECONDMATE_REGISTRY_ID" = "$ROUTE" ]; then
     MATCHES=$((MATCHES + 1))
     HOST=$SECONDMATE_REGISTRY_HOST
     ROOT=$SECONDMATE_REGISTRY_ROOT
     HOME_PATH=$SECONDMATE_REGISTRY_HOME
   fi
 done < "$REG"
+if [ "$MATCHES" -eq 0 ]; then
+  while IFS= read -r line || [ -n "$line" ]; do
+    case "$line" in '- '*) ;; *) continue ;; esac
+    secondmate_registry_parse_line "$line" || die "malformed secondmate registry entry: $line"
+    [ "$SECONDMATE_REGISTRY_REMOTE" -eq 1 ] || continue
+    if [ "$SECONDMATE_REGISTRY_HOST" = "$ROUTE" ]; then
+      MATCHES=$((MATCHES + 1))
+      HOST=$SECONDMATE_REGISTRY_HOST
+      ROOT=$SECONDMATE_REGISTRY_ROOT
+      HOME_PATH=$SECONDMATE_REGISTRY_HOME
+    fi
+  done < "$REG"
+fi
 [ "$MATCHES" -gt 0 ] || die "no remote secondmate or SSH alias matches '$ROUTE'"
 [ "$MATCHES" -eq 1 ] || die "remote route '$ROUTE' is ambiguous across $MATCHES configured secondmates; use a secondmate id"
 case "$HOST" in ''|-*|*[!A-Za-z0-9._-]*) die "configured SSH alias is unsafe: $HOST" ;; esac

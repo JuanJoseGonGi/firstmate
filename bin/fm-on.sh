@@ -7,7 +7,8 @@
 # Routes come only from remote records in data/secondmates.md. A record names an
 # SSH config alias, remote Firstmate code root, and remote FM_HOME. An exact
 # secondmate id always wins over any coincident host alias, so id routing is
-# never shadowed by another record on the same machine. A host alias may be used
+# never shadowed by another record on the same machine; two records sharing one
+# id are refused rather than resolved to either. A host alias may be used
 # directly only when exactly one record selects it and no id matches; an
 # ambiguous alias is refused. The command must be a genuine executable in this
 # checkout's bin/fm-*.sh namespace. No per-command table exists.

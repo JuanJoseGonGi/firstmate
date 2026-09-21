@@ -61,8 +61,13 @@ cat > "$FAKEBIN/no-mistakes" <<'SH'
 #!/usr/bin/env bash
 # The shared run inventory is the one call the cache itself makes every cycle;
 # it must stay instant so the warm run measures observation reuse, not reads.
+# An optional marker makes the inventory fail the way a stalled daemon does, so
+# the suite can prove the cache survives an unreadable inventory.
+echo "$*" >> "$FM_HOME/nm.log"
 case "${1:-}" in
-  runs) exit 0 ;;
+  runs)
+    [ -f "$FM_HOME/nm-runs-fail" ] && exit 1
+    exit 0 ;;
 esac
 sleep "${TASK_CACHE_NM_SLEEP:-4}"
 exit 0
@@ -107,6 +112,7 @@ done
 run_producer() {
   local start end
   start=$(date +%s)
+  : > "$HOME_DIR/nm.log"
   BASH_ENV='' PATH="$FAKEBIN:$PATH" \
     FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$HOME_DIR" \
     FM_SNAPSHOT_NOW="2026-08-28T10:00:00Z" FM_SNAPSHOT_NOW_EPOCH=1787911200 \
@@ -114,6 +120,13 @@ run_producer() {
     || fail "producer failed"
   end=$(date +%s)
   printf '%s' "$((end - start))"
+}
+
+# Every taxonomy of a real per-task read is a non-runs no-mistakes call. Cold
+# equals TASK_COUNT, warm equals zero, and load can only slow the wall clock
+# for both runs together, so the run-count is the deterministic reuse signal.
+slow_reads() {
+  awk '$1 != "runs" { n++ } END { print n + 0 }' "$HOME_DIR/nm.log"
 }
 
 validate_summary() {  # <freshness-mode: fresh|cached|invalidated>
@@ -143,15 +156,23 @@ cold_elapsed=$(run_producer)
 validate_summary fresh
 [ "$cold_elapsed" -ge 6 ] \
   || fail "cold producer finished in ${cold_elapsed}s; the slow read stub did not bind"
+[ "$(slow_reads)" -eq "$TASK_COUNT" ] \
+  || fail "cold producer ran $(slow_reads) current-state reads, expected $TASK_COUNT"
 pass "cold producer pays one current-state read per task"
 
-# Warm: no task input changed, so every observation must be reused and the
-# producer must finish far below both the previous run and the 60-second
-# publication deadline. Before the cache existed this equals the cold run.
+# Warm: no task input changed, so every observation must be reused. The warm
+# run must issue no slow read at all and finish well under half the cold wall
+# time - a full re-read equals the cold run, and a partial one still costs slow
+# reads. The relative bound keeps the gate honest on a loaded host, where the
+# absolute clock inflates for both runs together.
 warm_elapsed=$(run_producer)
 validate_summary cached
-[ "$warm_elapsed" -lt 5 ] \
-  || fail "warm producer took ${warm_elapsed}s; unchanged tasks were re-read instead of reused"
+[ "$(slow_reads)" -eq 0 ] \
+  || fail "warm producer issued $(slow_reads) slow reads; unchanged tasks were re-read instead of reused"
+[ "$warm_elapsed" -lt $((cold_elapsed / 2)) ] \
+  || fail "warm producer took ${warm_elapsed}s vs a ${cold_elapsed}s cold run; unchanged tasks were re-read instead of reused"
+[ "$warm_elapsed" -lt 30 ] \
+  || fail "warm producer took ${warm_elapsed}s; the 60-second deadline needs wider margin"
 pass "unchanged tasks reuse their prior observation with margin under the deadline"
 
 # Invalidation: a status append is one task changing, and only that task may
@@ -159,6 +180,8 @@ pass "unchanged tasks reuse their prior observation with margin under the deadli
 printf 'paused: the fixture changed\n' >> "$HOME_DIR/state/cache-task-1.status"
 invalidated_elapsed=$(run_producer)
 validate_summary invalidated
+[ "$(slow_reads)" -eq 1 ] \
+  || fail "changed task issued $(slow_reads) slow reads, expected exactly 1"
 [ "$invalidated_elapsed" -ge 3 ] \
   || fail "changed task took ${invalidated_elapsed}s; the observation cache ignored the status append"
 pass "a task change invalidates exactly the changed task"
@@ -167,6 +190,22 @@ pass "a task change invalidates exactly the changed task"
 # the producer is back to reuse and the margin under the deadline returns.
 rewarm_elapsed=$(run_producer)
 validate_summary cached
-[ "$rewarm_elapsed" -lt 5 ] \
-  || fail "re-warm producer took ${rewarm_elapsed}s; observations were not stored for reuse"
+[ "$(slow_reads)" -eq 0 ] \
+  || fail "re-warm producer issued $(slow_reads) slow reads; observations were not stored for reuse"
+[ "$rewarm_elapsed" -lt $((cold_elapsed / 2)) ] \
+  || fail "re-warm producer took ${rewarm_elapsed}s vs a ${cold_elapsed}s cold run; observations were not stored for reuse"
 pass "fresh observations from a changed run are stored for the next cycle"
+
+# Stalled inventory: the daemon stops answering the shared run inventory mid-
+# cadence. The cache must keep reusing the last-good fingerprint instead of
+# falling back to a full live re-read, so the summary cannot blow its deadline
+# in the same cycle its daemon is sick.
+printf 'x\n' > "$HOME_DIR/nm-runs-fail"
+stalled_elapsed=$(run_producer)
+validate_summary cached
+rm -f "$HOME_DIR/nm-runs-fail"
+[ "$(slow_reads)" -eq 0 ] \
+  || fail "stalled-inventory producer issued $(slow_reads) slow reads; an unreadable run inventory evicted the whole cache"
+[ "$stalled_elapsed" -lt $((cold_elapsed / 2)) ] \
+  || fail "stalled-inventory producer took ${stalled_elapsed}s vs a ${cold_elapsed}s cold run; the evicted cache missed the deadline margin"
+pass "an unreadable run inventory keeps the cached observations instead of re-reading every task"

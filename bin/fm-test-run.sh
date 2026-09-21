@@ -717,7 +717,7 @@ tests/fm-daemon.test.sh 27262
 tests/fm-dispatch-resolve.test.sh 4397
 tests/fm-documentation-audiences.test.sh 847
 tests/fm-extension-binding.test.sh 9053
-tests/fm-fleet-snapshot-task-cache.test.sh 6859
+tests/fm-fleet-snapshot-task-cache.test.sh 9128
 tests/fm-fleet-snapshot-view.test.sh 17465
 tests/fm-fleet-sync.test.sh 35983
 tests/fm-gate-refuse.test.sh 5328
@@ -735,7 +735,7 @@ tests/fm-herdr-pi-stale-registration-live-e2e.test.sh 47
 tests/fm-herdr-session-cleanup.test.sh 6828
 tests/fm-herdr-submit-confirm-live-e2e.test.sh 46
 tests/fm-herdr-version-floor-live-e2e.test.sh 72
-tests/fm-home-summary-refresh.test.sh 37264
+tests/fm-home-summary-refresh.test.sh 45397
 tests/fm-inactive-reconcile.test.sh 53178
 tests/fm-kimi-harness.test.sh 19151
 tests/fm-lint-workflows.test.sh 785

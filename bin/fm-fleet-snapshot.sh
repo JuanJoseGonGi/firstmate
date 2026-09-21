@@ -285,8 +285,10 @@ stream, semantic busy-state record, worktree head, and registered no-mistakes ru
 rows are all unchanged reuses the prior observation, and every fresh read is stored
 atomically under mode 0600. The shared per-cycle no-mistakes run inventory is
 bounded by FM_SNAPSHOT_RUNS_TIMEOUT (default 5 seconds) and read up to
-FM_SNAPSHOT_RUNS_LIMIT (default 200) rows; a failed inventory read disables the
-cache for that cycle, and a missing cache or a missing semantic busy-state record
+FM_SNAPSHOT_RUNS_LIMIT (default 200) rows; a failed inventory read reuses the
+last-good inventory kept beside the observations (so a stalled daemon never
+cold-starts every task), falling back to live reads only when no inventory was
+ever captured, and a missing cache or a missing semantic busy-state record
 keeps the live read path, so the cache can never report older state than the
 supervisor contract's own input-keyed freshness rules allow.
 Remote secondmate endpoint liveness is not probed by this command.
@@ -688,18 +690,28 @@ snapshot_task_cache_prepare() {
 
 # The shared no-mistakes run inventory is read once per cycle and scanned per
 # task, so one daemon round trip answers every task's run-rows fingerprint
-# instead of one listing per task. A failed read marks the inventory
-# unavailable and every task key unstable, which disables the cache for this
-# cycle only - never a stale observation.
+# instead of one listing per task. A failed read must not evict the cache: the
+# cache keys would go unstable and every task would pay a live read in the same
+# cycle the daemon is stalled. Instead the last-good inventory is kept beside
+# the observations and a failed read reuses it, so unchanged tasks keep their
+# cached observations; the next successful inventory re-keys them. Only a cycle
+# that never had a good inventory (no last-good snapshot yet) falls back to
+# live reads.
 snapshot_runs_capture() {
-  local captured
+  local captured runs_snapshot
   SNAPSHOT_RUNS_LIST=""
   SNAPSHOT_RUNS_UNAVAILABLE=0
   command -v no-mistakes >/dev/null 2>&1 || return 0
-  captured=$(fm_run_timed "$FM_SNAPSHOT_RUNS_TIMEOUT" \
-    no-mistakes runs --limit "$FM_SNAPSHOT_RUNS_LIMIT" 2>/dev/null) \
-    || { SNAPSHOT_RUNS_UNAVAILABLE=1; return 0; }
-  SNAPSHOT_RUNS_LIST=$captured
+  runs_snapshot="$FM_SNAPSHOT_TASK_CACHE_DIR/.runs-snapshot"
+  if captured=$(fm_run_timed "$FM_SNAPSHOT_RUNS_TIMEOUT" \
+      no-mistakes runs --limit "$FM_SNAPSHOT_RUNS_LIMIT" 2>/dev/null); then
+    SNAPSHOT_RUNS_LIST=$captured
+    printf '%s\n' "$captured" > "$runs_snapshot" 2>/dev/null || true
+  elif [ -f "$runs_snapshot" ] && [ -s "$runs_snapshot" ]; then
+    SNAPSHOT_RUNS_LIST=$(cat "$runs_snapshot" 2>/dev/null || true)
+  else
+    SNAPSHOT_RUNS_UNAVAILABLE=1
+  fi
 }
 
 snapshot_key_of() {  # hashes stdin -> 64-hex key or nothing

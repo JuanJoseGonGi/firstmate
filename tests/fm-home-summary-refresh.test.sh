@@ -140,7 +140,7 @@ WATCH_PID=$!
 i=0
 while [ ! -e "$HOME_DIR/state/.last-watcher-beat" ] && [ "$i" -lt 100 ]; do
   kill -0 "$WATCH_PID" 2>/dev/null || break
-  sleep 0.05
+  sleep 0.1
   i=$((i + 1))
 done
 [ -e "$HOME_DIR/state/.last-watcher-beat" ] \
@@ -286,7 +286,7 @@ WATCH_PID=$!
 i=0
 while [ ! -e "$CADENCE_HOME/state/.last-watcher-beat" ] && [ "$i" -lt 100 ]; do
   kill -0 "$WATCH_PID" 2>/dev/null || break
-  sleep 0.05
+  sleep 0.1
   i=$((i + 1))
 done
 [ -e "$CADENCE_HOME/state/.last-watcher-beat" ] \
@@ -364,9 +364,13 @@ PATH="$FAKEBIN:$PATH" \
   "$WRITER" > "$TMP_ROOT/killed-writer.out" 2> "$TMP_ROOT/killed-writer.err" &
 SLOW_WRITER_PID=$!
 i=0
-while [ ! -s "$SLOW_MARKER" ] && [ "$i" -lt 100 ]; do
+# A loaded host can take longer than five seconds to spawn the real producer up
+# to its first current-state read; only its arrival matters, not the speed, so
+# the window is generous relative to the thirty-second slow read it is about to
+# enter.
+while [ ! -s "$SLOW_MARKER" ] && [ "$i" -lt 300 ]; do
   kill -0 "$SLOW_WRITER_PID" 2>/dev/null || break
-  sleep 0.05
+  sleep 0.1
   i=$((i + 1))
 done
 [ -s "$SLOW_MARKER" ] || fail "the real producer did not reach the controlled slow current-state read"
@@ -874,9 +878,9 @@ PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$RESTART_HOME" \
   "$WATCH" > "$TMP_ROOT/restart-watch-two.out" 2> "$TMP_ROOT/restart-watch-two.err" &
 WATCH_PID=$!
 i=0
-while [ ! -e "$RESTART_HOME/state/.last-watcher-beat" ] && [ "$i" -lt 100 ]; do
+while [ ! -e "$RESTART_HOME/state/.last-watcher-beat" ] && [ "$i" -lt 200 ]; do
   kill -0 "$WATCH_PID" 2>/dev/null || break
-  sleep 0.05
+  sleep 0.1
   i=$((i + 1))
 done
 [ -e "$RESTART_HOME/state/.last-watcher-beat" ] \
@@ -893,9 +897,9 @@ if ! kill -0 "$WATCH_PID" 2>/dev/null; then
     "$WATCH" > "$TMP_ROOT/restart-watch-three.out" 2> "$TMP_ROOT/restart-watch-three.err" &
   WATCH_PID=$!
   i=0
-  while [ ! -e "$RESTART_HOME/state/.last-watcher-beat" ] && [ "$i" -lt 100 ]; do
+  while [ ! -e "$RESTART_HOME/state/.last-watcher-beat" ] && [ "$i" -lt 200 ]; do
     kill -0 "$WATCH_PID" 2>/dev/null || break
-    sleep 0.05
+    sleep 0.1
     i=$((i + 1))
   done
   [ -e "$RESTART_HOME/state/.last-watcher-beat" ] \
@@ -908,8 +912,8 @@ PATH="$FAKEBIN:$PATH" FM_ROOT_OVERRIDE="$ROOT" FM_HOME="$RESTART_HOME" \
   FM_HOME_SUMMARY_IF_IDLE=1 "$WRITER" --best-effort \
   || fail "stale-lock recovery changed the best-effort caller result"
 i=0
-while [ ! -e "$RESTART_HOME/state/home-summary.json" ] && [ "$i" -lt 200 ]; do
-  sleep 0.05
+while [ ! -e "$RESTART_HOME/state/home-summary.json" ] && [ "$i" -lt 400 ]; do
+  sleep 0.1
   i=$((i + 1))
 done
 [ -e "$RESTART_HOME/state/home-summary.json" ] \

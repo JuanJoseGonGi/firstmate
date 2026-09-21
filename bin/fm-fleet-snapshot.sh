@@ -68,6 +68,11 @@
 #     endpoint.agent_alive is populated for local secondmates only, where it is
 #     useful return-channel supervision data; remote secondmates use "unknown"
 #     without a probe, and other tasks use "not_checked".
+#     endpoint.observed_at is when the current_state observation was captured,
+#     and endpoint.freshness is "cached" exactly when that observation was
+#     reused from the per-task observation cache (task inputs unchanged since the
+#     prior cycle) instead of a fresh bin/fm-crew-state.sh read. Remote rows stay
+#     "fresh" because their liveness is not collected on this path at all.
 #   scout_reports[]: present data/<id>/report.md pointers.
 #   main_inventory: {valid,reason,orphan_in_flight[],unstructured_current_count} -
 #     main-home current-inventory checks shared with secondmate_home_summary_json
@@ -172,6 +177,9 @@ FM_SNAPSHOT_REGISTRY_LINES=${FM_SNAPSHOT_REGISTRY_LINES:-256}
 FM_SNAPSHOT_REGISTRY_BYTES=${FM_SNAPSHOT_REGISTRY_BYTES:-65536}
 FM_SNAPSHOT_REGISTRY_RECORDS=${FM_SNAPSHOT_REGISTRY_RECORDS:-40}
 FM_SNAPSHOT_REGISTRY_TIMEOUT=${FM_SNAPSHOT_REGISTRY_TIMEOUT:-2}
+FM_SNAPSHOT_TASK_CACHE_DIR=${FM_SNAPSHOT_TASK_CACHE_DIR:-$STATE/fleet-task-cache}
+FM_SNAPSHOT_RUNS_LIMIT=${FM_SNAPSHOT_RUNS_LIMIT:-200}
+FM_SNAPSHOT_RUNS_TIMEOUT=${FM_SNAPSHOT_RUNS_TIMEOUT:-5}
 validate_positive_bound() {  # <name> <value>
   case "$2" in
     ''|*[!0-9]*|0)
@@ -186,6 +194,10 @@ case "$FM_SNAPSHOT_SECONDMATES" in
     exit 2
     ;;
 esac
+case "$FM_SNAPSHOT_RUNS_LIMIT" in
+  ''|*[!0-9]*|0) FM_SNAPSHOT_RUNS_LIMIT=200 ;;
+esac
+validate_positive_bound FM_SNAPSHOT_RUNS_TIMEOUT "$FM_SNAPSHOT_RUNS_TIMEOUT"
 validate_positive_bound FM_SNAPSHOT_CREW_STATE_TIMEOUT "$FM_SNAPSHOT_CREW_STATE_TIMEOUT"
 validate_positive_bound FM_SNAPSHOT_LOCAL_READ_CONCURRENCY "$FM_SNAPSHOT_LOCAL_READ_CONCURRENCY"
 validate_positive_bound FM_SNAPSHOT_BUDGET "$FM_SNAPSHOT_BUDGET"
@@ -267,6 +279,16 @@ that home.
 Each local per-task current-state read is bounded by FM_SNAPSHOT_CREW_STATE_TIMEOUT
 (default 10 seconds); a read that hits the bound reports state unknown. Local task
 observations run concurrently, up to FM_SNAPSHOT_LOCAL_READ_CONCURRENCY (default 8).
+Per-task current-state observations are cached under FM_SNAPSHOT_TASK_CACHE_DIR
+(default state/fleet-task-cache): a task whose captured metadata, captured status
+stream, semantic busy-state record, worktree head, and registered no-mistakes run
+rows are all unchanged reuses the prior observation, and every fresh read is stored
+atomically under mode 0600. The shared per-cycle no-mistakes run inventory is
+bounded by FM_SNAPSHOT_RUNS_TIMEOUT (default 5 seconds) and read up to
+FM_SNAPSHOT_RUNS_LIMIT (default 200) rows; a failed inventory read disables the
+cache for that cycle, and a missing cache or a missing semantic busy-state record
+keeps the live read path, so the cache can never report older state than the
+supervisor contract's own input-keyed freshness rules allow.
 Remote secondmate endpoint liveness is not probed by this command.
 Terminal contradiction evidence uses
 FM_SNAPSHOT_TERMINAL_LINES, FM_SNAPSHOT_TERMINAL_BYTES, and
@@ -296,6 +318,24 @@ case "${1:---json}" in
 esac
 
 command -v jq >/dev/null 2>&1 || { echo "fm-fleet-snapshot: jq not found" >&2; exit 1; }
+
+# Per-cycle cost: every `jq` call goes through PATH. On dev boxes PATH
+# resolves jq to a mise shim (a symlink to the mise binary) that costs
+# ~0.2s per invocation; the snapshot calls jq ~10x per task. Resolve the
+# real binary once and shadow the name so all call sites inherit it.
+snapshot_resolve_jq() {  # <path-from-command-v>
+  local c=$1 real data_dir
+  [ -x "$c" ] && [ ! -L "$c" ] && { printf '%s' "$c"; return 0; }
+  if [ -L "$c" ]; then
+    # mise shim: the real binary lives under <data>/installs/<tool>/<ver>/bin
+    data_dir=$(dirname "$(dirname "$c")")
+    real=$(find "$data_dir/installs" -maxdepth 4 -type f \( -path "*/jq/*/bin/jq" -o -path "*/jq/*/jq" \) 2>/dev/null | head -n 1)
+    [ -n "$real" ] && [ -x "$real" ] && { printf '%s' "$real"; return 0; }
+  fi
+  printf '%s' "$c"
+}
+JQ_BIN=$(snapshot_resolve_jq "$(command -v jq)")
+jq() { "$JQ_BIN" "$@"; }
 
 bool_json() {
   if [ "$1" = 1 ]; then printf 'true'; else printf 'false'; fi
@@ -627,6 +667,120 @@ snapshot_task_generation_is_current() {  # <captured-meta> <id>
   fi
 }
 
+SNAPSHOT_RUNS_LIST=""
+SNAPSHOT_RUNS_UNAVAILABLE=0
+SNAPSHOT_TASK_CACHE_AVAILABLE=0
+
+snapshot_task_cache_prepare() {
+  local mode
+  SNAPSHOT_TASK_CACHE_AVAILABLE=0
+  if [ -e "$FM_SNAPSHOT_TASK_CACHE_DIR" ] || [ -L "$FM_SNAPSHOT_TASK_CACHE_DIR" ]; then
+    [ -d "$FM_SNAPSHOT_TASK_CACHE_DIR" ] && [ ! -L "$FM_SNAPSHOT_TASK_CACHE_DIR" ] || return 1
+    mode=$(file_mode_octal "$FM_SNAPSHOT_TASK_CACHE_DIR")
+    case "$mode" in ''|*[!0-7]*) return 1 ;; esac
+    [ $((8#$mode & 077)) -eq 0 ] || return 1
+  else
+    [ -d "$(dirname "$FM_SNAPSHOT_TASK_CACHE_DIR")" ] || return 1
+    (umask 077; mkdir "$FM_SNAPSHOT_TASK_CACHE_DIR") 2>/dev/null || return 1
+  fi
+  SNAPSHOT_TASK_CACHE_AVAILABLE=1
+}
+
+# The shared no-mistakes run inventory is read once per cycle and scanned per
+# task, so one daemon round trip answers every task's run-rows fingerprint
+# instead of one listing per task. A failed read marks the inventory
+# unavailable and every task key unstable, which disables the cache for this
+# cycle only - never a stale observation.
+snapshot_runs_capture() {
+  local captured
+  SNAPSHOT_RUNS_LIST=""
+  SNAPSHOT_RUNS_UNAVAILABLE=0
+  command -v no-mistakes >/dev/null 2>&1 || return 0
+  captured=$(fm_run_timed "$FM_SNAPSHOT_RUNS_TIMEOUT" \
+    no-mistakes runs --limit "$FM_SNAPSHOT_RUNS_LIMIT" 2>/dev/null) \
+    || { SNAPSHOT_RUNS_UNAVAILABLE=1; return 0; }
+  SNAPSHOT_RUNS_LIST=$captured
+}
+
+snapshot_key_of() {  # hashes stdin -> 64-hex key or nothing
+  local h
+  if command -v shasum >/dev/null 2>&1; then
+    h=$(shasum -a 256 | awk '{print $1}') || return 1
+  elif command -v sha256sum >/dev/null 2>&1; then
+    h=$(sha256sum | awk '{print $1}') || return 1
+  else
+    return 1
+  fi
+  case "$h" in ''|*[!A-Fa-f0-9]*) return 1 ;; esac
+  [ "${#h}" -eq 64 ] || return 1
+  printf '%s\n' "$h"
+}
+
+snapshot_task_cache_key() {  # <captured-meta> <captured-status> <id> <worktree>
+  local meta=$1 status=$2 id=$3 wt=$4
+  local branch runs_rows fp busy_gen head
+  if [ "$SNAPSHOT_RUNS_UNAVAILABLE" = 1 ]; then
+    fp="unavailable-${BASHPID:-$$}"
+  else
+    branch=$(git -C "$wt" symbolic-ref --quiet --short HEAD 2>/dev/null || true)
+    runs_rows=""
+    if [ -n "$branch" ]; then
+      runs_rows=$(printf '%s\n' "$SNAPSHOT_RUNS_LIST" \
+        | awk -v b="$branch" 'NF >= 3 && $2 == b {print}')
+    fi
+    fp=$(printf '%s' "$runs_rows" | snapshot_key_of) || fp=unhashable
+  fi
+  head=$(git -C "$wt" rev-parse HEAD 2>/dev/null || true)
+  busy_gen="$STATE/$id.busy-gen"
+  {
+    printf 'meta\n'; cat -- "$meta" 2>/dev/null || true
+    printf 'status\n'; cat -- "$status" 2>/dev/null || true
+    printf 'busy\n'; cat -- "$STATE/$id.busy-state" 2>/dev/null || true
+    printf 'gen\n'; cat -- "$busy_gen" 2>/dev/null || true
+    printf 'head\n%s\nruns\n%s\n' "$head" "$fp"
+  } | snapshot_key_of
+}
+
+snapshot_task_cache_path() {  # <id>
+  local id=$1
+  [ "$SNAPSHOT_TASK_CACHE_AVAILABLE" -eq 1 ] || return 1
+  case "$id" in ''|.*|*[!A-Za-z0-9._-]*) return 1 ;; esac
+  printf '%s/%s.json\n' "$FM_SNAPSHOT_TASK_CACHE_DIR" "$id"
+}
+
+# A valid cache entry must parse and carry the exact key computed from the
+# current observable inputs. Anything else is a miss, never an error.
+snapshot_task_cache_read() {  # <id> <key> -> "<captured-at>|<current-state-json>" or nothing
+  local id=$1 want=$2 file captured current
+  file=$(snapshot_task_cache_path "$id") || return 1
+  [ -f "$file" ] && [ ! -L "$file" ] || return 1
+  if ! jq -e --arg want "$want" '
+    .key == $want
+    and (.captured_at | type) == "string" and (.captured_at | length) > 0
+    and (.current_state | type) == "object"
+  ' "$file" >/dev/null 2>&1; then
+    return 1
+  fi
+  captured=$(jq -r '.captured_at' "$file") || return 1
+  current=$(jq -c '.current_state' "$file") || return 1
+  printf '%s|%s\n' "$captured" "$current"
+}
+
+snapshot_task_cache_store() {  # <id> <key> <current-state-json>
+  local id=$1 key=$2 current=$3 file tmp
+  [ -n "$key" ] && [ -n "$current" ] || return 1
+  file=$(snapshot_task_cache_path "$id") || return 1
+  [ ! -L "$file" ] || return 1
+  tmp=$(umask 077; mktemp "$FM_SNAPSHOT_TASK_CACHE_DIR/.task.XXXXXX") || return 1
+  if jq -n --arg key "$key" --arg at "$SNAPSHOT_NOW" --argjson current "$current" \
+      '{key:$key,captured_at:$at,current_state:$current}' > "$tmp" \
+    && chmod 600 "$tmp" && mv -f -- "$tmp" "$file"; then
+    return 0
+  fi
+  rm -f -- "$tmp"
+  return 1
+}
+
 prefetch_task_observations() {  # <meta> <id>
   local meta=$1 id=$2 remote_host current_file endpoint_file current_pid='' current_rc=0
   local status_log status_capture report_path report_capture
@@ -650,8 +804,21 @@ prefetch_task_observations() {  # <meta> <id>
       > "$current_file" || current_rc=1
     agent_alive=unknown
   elif [ "$generation_current" = 1 ]; then
-    crew_state_json "$id" "$meta" "$status_capture" > "$current_file" &
-    current_pid=$!
+    used_cache=0
+    task_key=$(snapshot_task_cache_key "$meta" "$status_capture" "$id" "$(meta_value "$meta" worktree)")
+    if [ -f "$STATE/$id.busy-state" ] && [ -f "$STATE/$id.busy-gen" ]; then
+      cached=$(snapshot_task_cache_read "$id" "$task_key" || true)
+      if [ -n "$cached" ]; then
+        IFS='|' read -r cached_at cached_json <<< "$cached"
+        printf '%s\n' "$cached_json" > "$current_file" || current_rc=1
+        printf '%s\n' "$cached_at" > "$SNAPSHOT_TASK_DIR/$id.observed" || current_rc=1
+        used_cache=1
+      fi
+    fi
+    if [ "$used_cache" -eq 0 ]; then
+      crew_state_json "$id" "$meta" "$status_capture" > "$current_file" &
+      current_pid=$!
+    fi
     kind=$(meta_value "$meta" kind)
     backend=$(fm_backend_of_meta "$meta")
     target=$(fm_backend_target_of_meta "$meta")
@@ -680,6 +847,8 @@ prefetch_task_observations() {  # <meta> <id>
       > "$current_file" || current_rc=1
     endpoint_exists=null
     agent_alive=unknown
+  elif [ "${used_cache:-0}" -eq 0 ] && [ -n "${task_key:-}" ]; then
+    snapshot_task_cache_store "$id" "$task_key" "$(<"$current_file")" || true
   fi
   printf 'endpoint_exists=%s\nagent_alive=%s\n' "$endpoint_exists" "$agent_alive" > "$endpoint_file" || current_rc=1
   return "$current_rc"
@@ -717,6 +886,10 @@ prefetch_task_current_states() {
     SNAPSHOT_TASK_METAS[SNAPSHOT_TASK_META_COUNT]=$captured_meta
     SNAPSHOT_TASK_META_COUNT=$((SNAPSHOT_TASK_META_COUNT + 1))
   done
+  if [ "$SNAPSHOT_TASK_META_COUNT" -gt 0 ]; then
+    snapshot_task_cache_prepare || true
+    snapshot_runs_capture
+  fi
   while [ "$index" -lt "$SNAPSHOT_TASK_META_COUNT" ]; do
     meta=${SNAPSHOT_TASK_METAS[index]}
     id=$(basename "$meta" .meta)
@@ -789,6 +962,13 @@ task_json_lines() {
       snapshot_task_cleanup
       return 1
     }
+    observed_at=$SNAPSHOT_NOW
+    current_freshness=fresh
+    if [ -f "$SNAPSHOT_TASK_DIR/$id.observed" ]; then
+      observed_at=$(<"$SNAPSHOT_TASK_DIR/$id.observed") || true
+      [ -n "$observed_at" ] || observed_at=$SNAPSHOT_NOW
+      current_freshness=cached
+    fi
     event_json=$(status_event_json "$status_log" "$STATE/$id.status")
     last_event_raw=$(printf '%s' "$event_json" | jq -r '.last_event.raw // ""')
     read -r current_state current_source < <(
@@ -870,7 +1050,8 @@ task_json_lines() {
       --arg pr_source "$pr_source" \
       --arg pr_head "$(meta_value "$meta" pr_head)" \
       --arg agent_alive "$agent_alive" \
-      --arg observed_at "$SNAPSHOT_NOW" \
+      --arg state_observed_at "$observed_at" \
+      --arg state_freshness "$current_freshness" \
       --arg last_event_raw "$last_event_raw" \
       --argjson current_state "$current_json" \
       --argjson meta_path "$meta_json" \
@@ -901,12 +1082,12 @@ task_json_lines() {
           report:$report
         },
         secondmate_projects:($projects | if . == "" then [] else split(",") | map(gsub("^[[:space:]]+|[[:space:]]+$"; "")) | map(select(. != "")) end),
-        current_state:($current_state + {observed_at:$observed_at,freshness:"fresh"}),
+        current_state:($current_state + {observed_at:$state_observed_at,freshness:$state_freshness}),
         endpoint:{target:($target | if . == "" then null else . end),exists:$endpoint_exists,agent_alive:$agent_alive,
           status:(if $endpoint_exists == false then "absent"
                   elif $agent_alive == "alive" or $agent_alive == "dead" then $agent_alive
                   else "unknown" end),
-          observed_at:$observed_at,freshness:"fresh"},
+          observed_at:$state_observed_at,freshness:$state_freshness},
         pr:{url:($pr | if . == "" then null else . end),source:$pr_source,head:($pr_head | if . == "" then null else . end)},
         hints:{
           pending_decision:$pending_decision,

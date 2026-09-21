@@ -154,9 +154,13 @@ WATCH_PID=
 
 run_producer "$NOW_TWO" "$EPOCH_TWO" > "$TMP_ROOT/fresh-summary.json" \
   || fail "fresh secondmate-home-summary production failed"
-jq -S 'del(.generated, .generated_epoch)' "$HOME_DIR/state/home-summary.json" \
+# The publish parity check compares ledger content, not observation provenance:
+# the watcher's run read the changed task live while the direct producer reused
+# that just-stored observation, so freshness differs between the two runs even
+# though every observation (state, source, observed_at) is identical.
+jq -S 'del(.generated, .generated_epoch) | walk(if type == "object" then del(.freshness) else . end)' "$HOME_DIR/state/home-summary.json" \
   > "$TMP_ROOT/published-normalized.json"
-jq -S 'del(.generated, .generated_epoch)' "$TMP_ROOT/fresh-summary.json" \
+jq -S 'del(.generated, .generated_epoch) | walk(if type == "object" then del(.freshness) else . end)' "$TMP_ROOT/fresh-summary.json" \
   > "$TMP_ROOT/fresh-normalized.json"
 cmp -s "$TMP_ROOT/published-normalized.json" "$TMP_ROOT/fresh-normalized.json" \
   || fail "the status-triggered ledger differed from the real fresh producer"

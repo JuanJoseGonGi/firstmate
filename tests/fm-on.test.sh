@@ -98,7 +98,7 @@ done
 host=$1
 entry=$2
 shift 2
-[ "$host" = remote-mac ] || exit 91
+case "$host" in remote-mac|entely) ;; *) exit 91 ;; esac
 [ "$entry" = fm-remote-entrypoint.sh ] || exit 92
 case "${FM_FAKE_SSH_MODE:-normal}" in
   unreachable) exit 255 ;;
@@ -497,6 +497,33 @@ out=$(fm_on ios fm-probe-two.sh)
 assert_contains "$out" "home=$REMOTE_HOME" "secondmate-id routing broke after alias ambiguity"
 write_registry
 pass "ambiguous aliases refuse while exact secondmate ids remain routable"
+
+# Regression: two secondmates on the same machine, where the first one's id
+# equals the shared host alias. Exact-id routing must win over the other
+# record's coincident host match instead of dying as ambiguous, and the second
+# same-host id must keep routing to its own home.
+mkdir -p "$TMP_ROOT/other-remote-home"
+cat > "$LOCAL_HOME/data/secondmates.md" <<EOF
+- entely - original delivery (host: entely; root: $REMOTE_ROOT; home: $REMOTE_HOME; scope: original work; projects: alpha; added 2026-08-02)
+- build - second delivery (host: entely; root: $REMOTE_ROOT; home: $TMP_ROOT/other-remote-home; scope: build work; projects: beta; added 2026-08-02)
+EOF
+out=$(fm_on entely fm-probe-two.sh)
+assert_contains "$out" "home=$REMOTE_HOME" "an exact secondmate id was shadowed by another record's coincident same-host alias"
+out=$(fm_on build fm-probe-two.sh)
+assert_contains "$out" "home=$TMP_ROOT/other-remote-home" "the id of the second same-host secondmate stopped routing"
+# Genuine ambiguity between two configured ids must keep refusing.
+cat > "$LOCAL_HOME/data/secondmates.md" <<EOF
+- dup - first delivery (host: remote-mac; root: $REMOTE_ROOT; home: $REMOTE_HOME; scope: dup work; projects: alpha; added 2026-08-02)
+- dup - second delivery (host: other-mac; root: $REMOTE_ROOT; home: $TMP_ROOT/other-remote-home; scope: dup work; projects: beta; added 2026-08-02)
+EOF
+set +e
+out=$(fm_on dup fm-probe-two.sh 2>&1)
+rc=$?
+set -e
+[ "$rc" -ne 0 ] || fail "a route matching two secondmate ids was accepted"
+assert_contains "$out" "sharing that id" "a duplicated secondmate id did not refuse with the duplicate-id advice"
+write_registry
+pass "an exact id beats a coincident same-host alias while genuine id ambiguity still refuses"
 
 : > "$SSH_COUNT"
 set +e

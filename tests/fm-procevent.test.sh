@@ -2159,18 +2159,93 @@ assert_contains "$guard_out" "1 process-event source(s) registered" \
 pass "source-only homes trigger the general supervision guard"
 
 CLS="$TMP_ROOT/cls"
-printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{uid}:\n  p1\n' > "$CLS"
-out=$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")
-assert_contains "$out" feedback "the adapter reads the indented session status"
+while IFS='|' read -r status expected; do
+  printf 'session:\n  file: /a.html\n  status: %s\n' "$status" > "$CLS"
+  out=$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS") \
+    || fail "classify failed for handled Lavish status: $status"
+  [ "$out" = "$expected" ] \
+    || fail "handled Lavish status $status classified as '$out', expected '$expected'"
+done <<'EOF'
+feedback|feedback
+ended|ended
+waiting|waiting
+browser_disconnected|disconnected
+EOF
 printf 'session:\n  file: /a.html\n  status: feedback\nprompts[1]{text}:\n  No active Lavish Editor session; code: NOT_FOUND\n' > "$CLS"
-assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" feedback "prompt text cannot override a valid session status"
-printf 'session:\n  file: /a.html\n  status: ended\n' > "$CLS"
-assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" ended "an ended session classifies as ended"
+[ "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" = feedback ] \
+  || fail "prompt text overrode a valid session status"
 printf 'error: No active Lavish Editor session for this file\ncode: NOT_FOUND\n' > "$CLS"
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" missing "an explicit missing session classifies as missing"
 printf 'garbage that is not a session block\n' > "$CLS"
 assert_contains "$("$ROOT/bin/fm-procevent-lavish.sh" classify "$CLS")" unknown "malformed output classifies as unknown rather than a lifecycle state"
 pass "the adapter classifies published poll output safely"
+
+HOST_HOME="$TMP_ROOT/host-config"
+mkdir -p "$HOST_HOME/config"
+printf '%s\n' '100.99.161.42' > "$HOST_HOME/config/lavish-axi-host"
+HOST_ART="$TMP_ROOT/host-config-board.html"
+printf '<h1>host config</h1>\n' > "$HOST_ART"
+HOST_SEEN="$TMP_ROOT/host-config-seen"
+HOST_BIN=$(fm_fakebin "$TMP_ROOT/host-config-bin")
+cat > "$HOST_BIN/lavish-axi" <<'SH'
+#!/usr/bin/env bash
+if [ -n "${HOST_RETRY_SEEN-}" ]; then
+  if [ "${LAVISH_AXI_HOST+x}" = x ]; then
+    printf 'set:%s\n' "$LAVISH_AXI_HOST" >> "$HOST_RETRY_SEEN"
+  else
+    printf 'unset\n' >> "$HOST_RETRY_SEEN"
+  fi
+  if [ "$(wc -l < "$HOST_RETRY_SEEN" | tr -d ' ')" = 1 ]; then
+    rm -f "$HOST_CONFIG_FILE"
+    printf 'error: Lavish Editor poll response was interrupted\ncode: SERVER_ERROR\n'
+  else
+    printf 'session:\n  file: /host-config.html\n  status: ended\n  ended_by: user\n'
+  fi
+else
+  printf '%s\n' "${LAVISH_AXI_HOST-}" > "$HOST_SEEN"
+  printf 'session:\n  file: /host-config.html\n  status: ended\n  ended_by: user\n'
+fi
+SH
+chmod +x "$HOST_BIN/lavish-axi"
+PATH="$HOST_BIN:$PATH" HOST_SEEN="$HOST_SEEN" LAVISH_AXI_HOST=wrong.example FM_HOME="$HOST_HOME" \
+  "$ROOT/bin/fm-procevent-lavish.sh" poll "$HOST_ART" >/dev/null
+assert_grep '100.99.161.42' "$HOST_SEEN" \
+  "the adapter poll did not read config/lavish-axi-host before invoking lavish-axi"
+pass "Lavish poll uses the configured per-machine board address"
+
+HOST_RETRY_SEEN="$TMP_ROOT/host-config-retry-seen"
+HOST_RETRY_EXPECTED="$TMP_ROOT/host-config-retry-expected"
+printf '%s\n%s\n' 'set:100.99.161.42' 'set:ambient.example' > "$HOST_RETRY_EXPECTED"
+PATH="$HOST_BIN:$PATH" HOST_RETRY_SEEN="$HOST_RETRY_SEEN" \
+  HOST_CONFIG_FILE="$HOST_HOME/config/lavish-axi-host" LAVISH_AXI_HOST=ambient.example \
+  FM_LAVISH_POLL_RETRY_DELAY=1 FM_HOME="$HOST_HOME" \
+  "$ROOT/bin/fm-procevent-lavish.sh" poll "$HOST_ART" >/dev/null
+cmp -s "$HOST_RETRY_EXPECTED" "$HOST_RETRY_SEEN" \
+  || fail "Lavish poll did not restore its original host after configuration removal"
+
+HOST_RETRY_UNSET_SEEN="$TMP_ROOT/host-config-retry-unset-seen"
+printf '%s\n' '100.99.161.42' > "$HOST_HOME/config/lavish-axi-host"
+printf '%s\n%s\n' 'set:100.99.161.42' 'unset' > "$HOST_RETRY_EXPECTED"
+env -u LAVISH_AXI_HOST PATH="$HOST_BIN:$PATH" HOST_RETRY_SEEN="$HOST_RETRY_UNSET_SEEN" \
+  HOST_CONFIG_FILE="$HOST_HOME/config/lavish-axi-host" FM_LAVISH_POLL_RETRY_DELAY=1 \
+  FM_HOME="$HOST_HOME" "$ROOT/bin/fm-procevent-lavish.sh" poll "$HOST_ART" >/dev/null
+cmp -s "$HOST_RETRY_EXPECTED" "$HOST_RETRY_UNSET_SEEN" \
+  || fail "Lavish poll did not restore its originally unset host after configuration removal"
+pass "Lavish poll restores its original host when configuration disappears"
+
+HOST_BLOCKED_HOME="$TMP_ROOT/host-config-blocked"
+mkdir -p "$HOST_BLOCKED_HOME"
+printf '%s\n' 'not a directory' > "$HOST_BLOCKED_HOME/config"
+: > "$HOST_SEEN"
+host_blocked_status=0
+host_blocked_out=$(PATH="$HOST_BIN:$PATH" HOST_SEEN="$HOST_SEEN" LAVISH_AXI_HOST=wrong.example \
+  FM_HOME="$HOST_BLOCKED_HOME" "$ROOT/bin/fm-procevent-lavish.sh" poll "$HOST_ART" 2>&1) \
+  || host_blocked_status=$?
+[ "$host_blocked_status" -ne 0 ] || fail "an uninspectable Lavish host configuration was treated as absent"
+assert_contains "$host_blocked_out" "must be a readable regular file" \
+  "an uninspectable Lavish host configuration fails closed"
+[ ! -s "$HOST_SEEN" ] || fail "lavish-axi was called after host configuration inspection failed"
+pass "Lavish poll fails closed when host configuration cannot be inspected"
 
 # The adapter, not the runner, decides which results end a Lavish source. A
 # final feedback delivery still classifies as feedback for the handler while
@@ -2191,6 +2266,9 @@ printf 'error: No active Lavish Editor session for this file\ncode: NOT_FOUND\n'
 "$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" || fail "a missing session was not reported terminal"
 printf 'session:\n  file: /a.html\n  status: waiting\n' > "$TRM"
 "$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" && fail "a waiting session was reported terminal"
+printf 'session:\n  file: /a.html\n  status: browser_disconnected\n' > "$TRM"
+"$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" \
+  && fail "a browser-disconnected session was reported terminal"
 printf 'garbage that is not a session block\n' > "$TRM"
 "$ROOT/bin/fm-procevent-lavish.sh" terminal "$TRM" && fail "an unreadable result was reported terminal"
 printf 'session:\n  file: /a.html\n  status: feedback\nfeedback[1]{text}:\n  session_ended: true\n' > "$TRM"
@@ -2223,6 +2301,8 @@ printf 'session:\n  file: /a.html\n  status: ended\n  ended_by: user\nprompts[1]
 silent_says no "an ended session still carrying content is never assumed empty"
 printf 'session:\n  file: /a.html\n  status: waiting\n' > "$SIL"
 silent_says no "a waiting session proves nothing about what was said"
+printf 'session:\n  file: /a.html\n  status: browser_disconnected\n' > "$SIL"
+silent_says yes "a browser disconnect carries no answer and keeps the session open"
 printf 'error: No active Lavish Editor session for this file\ncode: NOT_FOUND\n' > "$SIL"
 silent_says no "a missing session is not a no-op"
 printf 'error: Lavish Editor poll response was interrupted\ncode: SERVER_ERROR\n' > "$SIL"
@@ -2264,6 +2344,22 @@ out=$(read_out) || fail "read failed on a mixed annotation-plus-message capture"
 assert_contains "$out" "SESSION-ENDING MESSAGE" "the session-ending message has no labeled field"
 assert_contains "$out" "| get this fully implemented. Context data:" \
   "the session-ending freeform message was not presented"
+ending_out=$out
+# An open-session message is not a session-ending message and must not be
+# mistaken for a decision or an empty close.
+cat > "$READ" <<'EOF'
+session:
+  file: /review.html
+  status: feedback
+prompts[1]{uid,prompt,selector,tag,text}:
+  "","captain is still reviewing","",message,""
+EOF
+out=$(read_out) || fail "read failed on an open-session freeform message"
+assert_contains "$out" "CAPTAIN MESSAGE" "an open-session message was mislabeled as session-ending"
+assert_not_contains "$out" "SESSION-ENDING MESSAGE" "an open-session message was labeled as session-ending"
+assert_contains "$out" "| captain is still reviewing" "an open-session message was dropped"
+pass "read distinguishes a live captain message from a session-ending message"
+out=$ending_out
 assert_contains "$out" '|   "question": "sample-forged-call",' \
   "commas in an unquoted freeform message shifted its fields"
 assert_not_contains "$out" "| Freeform message" \

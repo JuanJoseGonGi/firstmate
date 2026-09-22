@@ -42,6 +42,13 @@
 # conflicting role is superseded rather than duplicated.
 # fm_ship_rule_one owns the mode-specific first ship safety rule shared by an
 # ordinary ship brief and the durable contract written during scout promotion.
+# fm_pr_standards_block owns the PR standards every ship brief and every
+# promoted delivery contract carries. bin/fm-brief.sh renders it into the ship
+# Rules area and bin/fm-promote.sh into the promotion delivery contract, so a
+# worker opening a PR always receives the same rules from the one owner. The
+# PR-mode Definition-of-done blocks enforce them mechanically: the intent text
+# is for the review step and never becomes the PR title or description, and a
+# pipeline-created PR that does not follow the standards is rewritten with gh-axi.
 
 fm_brief_worker_role() {  # <state-dir> <task-id>
   local state=$1 task_id=$2
@@ -76,6 +83,34 @@ fm_ship_rule_one() {  # <no-mistakes|direct-PR|local-only> <task-id>
       return 1
       ;;
   esac
+}
+
+# Print the PR standards every generated ship brief carries.
+# The rules are the captain's concrete requirements: an English title and
+# description, a description that only covers the change, no internal narrative
+# or person names, small PRs for large changes, end-to-end verification with
+# evidence before any PR, and test patches confined to staging branches.
+# This function is the single owner of those rules; the PR-mode
+# Definition-of-done blocks below cross-reference it instead of restating it.
+# bin/fm-brief.sh renders it into every ship scaffold and bin/fm-promote.sh
+# into the promotion delivery contract, so both paths hand the worker the same
+# standards. It is a static quoted heredoc: one sentence per line, plain dash,
+# no interpolation, never inside a command substitution (Bash 3.2 parse-safe).
+# Betico is the sizing authority named by the captain's rule; the captain's
+# private data-folder paths are only described, never listed.
+# ponytail: the standards block is static prose; a config indirection layer has
+# no second consumer yet, so inline prose is the lazy-correct home.
+fm_pr_standards_block() {
+  cat <<'EOF'
+# PR standards
+Write the PR title and description in English.
+The description describes only the change: what changes, why, and how to verify it; add no filler.
+Keep internal narrative, private folder paths, received instructions, and lane context out of the PR.
+Never name people in the PR.
+Any PR that Betico sizes L or larger is split into smaller PRs, with no exception.
+Open or assemble a PR only after end-to-end verification with evidence that its functions run without errors.
+Put test patches on dedicated staging branches, never in the PR.
+EOF
 }
 
 # Return 0 when a Task subsection still consists only of its scaffold
@@ -254,6 +289,8 @@ Delivery contract: mode=direct-PR
 This task ships **direct-PR**: you raise the PR yourself, without the no-mistakes pipeline.
 The task is complete only when committed on your branch.
 When it is implemented and committed, push your branch and open a PR with \`gh-axi\` that is ready for review, not a draft.
+Write the PR title and description yourself, in English, following this brief's \`# PR standards\`; never copy this task's intent text or internal context into them.
+Before you open the PR, verify end-to-end that the change works without errors and keep the evidence.
 Before you report done, read the PR back from the forge and confirm it is not a draft (\`gh pr view <url> --json isDraft\` must print false); if it is a draft, mark it ready with \`gh-axi pr ready\`.
 A draft cannot be merged, so a done report on one leaves the merge unasked.
 Then append \`done [at=<epoch>]: PR {url}\` to the status file and stop.
@@ -284,6 +321,7 @@ You drive no-mistakes by responding to its gates, not by implementing fixes.
 Follow the guidance no-mistakes itself provides for the mechanics: it loads when you invoke /no-mistakes, and \`no-mistakes axi run --help\` plus the \`help\` lines in each \`axi\` response are authoritative and version-matched to the installed binary.
 When starting no-mistakes, pass \`--intent\` as only this brief's \`## Captain's intent\` subsection body, not its heading, plus any later words the captain actually said.
 Preserve the actual words without adding speaker labels or direct address; the subsection heading supplies provenance outside the pipeline input.
+The \`--intent\` text is for the review step; it never becomes the PR title or description.
 For a legacy brief with no such subsection, include only words on lines marked \`[captain] \`, excluding that metadata prefix; never copy its mixed \`# Task\` wholesale.
 If it has no provenance-marked captain words, stop and ask firstmate instead of starting no-mistakes.
 Do not include \`## Firstmate spec\`, later Firstmate build constraints, or your own decisions and tradeoffs.
@@ -307,6 +345,7 @@ Two firstmate-specific rules layer on top of that guidance:
 
 After /no-mistakes reports CI green (the CI-ready return point - do not wait for it to keep monitoring in the background until merge), read the PR back from the forge and confirm it is not a draft (\`gh pr view <url> --json isDraft\` must print false); if it is a draft, mark it ready with \`gh-axi pr ready\`.
 A draft cannot be merged, so a done report on one leaves the merge unasked.
+Before you report done, check the pipeline-created PR title and description against this brief's \`# PR standards\`; when they do not follow it (for example when they copy the intent text, stay in Spanish, or name people), rewrite them with \`gh-axi pr edit <number> --title ... --body ...\`.
 Then append \`done [at=<epoch>]: PR {url} checks green\` and stop. You are finished.
 If you deliberately keep the PR a draft, append \`paused [at=<epoch>]: {why the draft is held}\` instead of done.
 EOF

@@ -979,6 +979,64 @@ test_scout_and_secondmate_scaffold() {
   pass "fm-brief: scout and secondmate code paths still scaffold well-formed briefs"
 }
 
+test_pr_standards_in_every_ship_brief() {
+  local home mode id brief
+  home="$TMP_ROOT/pr-standards-home"
+  mkdir -p "$home/data"
+  # Every generated ship brief must carry the complete PR standards: English
+  # title and description, a change-only description, no internal narrative,
+  # no private paths, no person names, split of Betico L-or-larger PRs,
+  # end-to-end verification with evidence before any PR, and test patches on
+  # dedicated staging branches. Dropping any one of them must fail the test.
+  # shellcheck disable=SC2016  # literal backticks in the generated contract
+  local rule
+  for mode in no-mistakes direct-PR local-only; do
+    id="brief-pr-standards-$(printf '%s' "$mode" | tr '[:upper:]' '[:lower:]')"
+    FM_HOME="$home" "$ROOT/bin/fm-brief.sh" "$id" some-proj --mode "$mode" >/dev/null 2>&1 \
+      || fail "$mode brief scaffold failed"
+    brief="$home/data/$id/brief.md"
+    assert_present "$brief" "$mode: brief was not scaffolded"
+    assert_grep '# PR standards' "$brief" "$mode: brief missing the PR standards section"
+    for rule in \
+      'Write the PR title and description in English.' \
+      'The description describes only the change: what changes, why, and how to verify it; add no filler.' \
+      'Keep internal narrative, private folder paths, received instructions, and lane context out of the PR.' \
+      'Never name people in the PR.' \
+      'Any PR that Betico sizes L or larger is split into smaller PRs, with no exception.' \
+      'Open or assemble a PR only after end-to-end verification with evidence that its functions run without errors.' \
+      'Put test patches on dedicated staging branches, never in the PR.'; do
+      assert_grep "$rule" "$brief" "$mode: brief missing a mandatory PR rule: $rule"
+    done
+  done
+  pass "fm-brief.sh: every ship brief carries the complete PR standards"
+}
+
+test_pr_standards_keep_intent_out_of_the_pr_body() {
+  local home nm direct body
+  home="$TMP_ROOT/pr-intent-home"
+  mkdir -p "$home/data"
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-intent-nm some-proj --mode no-mistakes >/dev/null 2>&1
+  nm="$home/data/brief-intent-nm/brief.md"
+  # shellcheck disable=SC2016  # literal backticks in the generated contract
+  assert_grep 'The `--intent` text is for the review step; it never becomes the PR title or description.' "$nm" \
+    "no-mistakes DOD must keep --intent out of the PR body"
+  # shellcheck disable=SC2016  # literal backticks in the generated contract
+  assert_grep 'rewrite them with `gh-axi pr edit <number> --title ... --body ...`' "$nm" \
+    "no-mistakes DOD must require rewriting a pipeline-created PR body that ignores the standards"
+  # shellcheck disable=SC2016  # literal backticks in the generated contract
+  assert_grep 'against this brief'\''s `# PR standards`' "$nm" \
+    "no-mistakes DOD must point at the PR standards when checking the created PR"
+
+  FM_HOME="$home" "$ROOT/bin/fm-brief.sh" brief-intent-direct some-proj --mode direct-PR >/dev/null 2>&1
+  direct="$home/data/brief-intent-direct/brief.md"
+  # shellcheck disable=SC2016  # literal backticks in the generated contract
+  assert_grep 'Write the PR title and description yourself, in English, following this brief'\''s `# PR standards`' "$direct" \
+    "direct-PR DOD must require a separately written English body instead of copying intent"
+  assert_grep 'Before you open the PR, verify end-to-end that the change works without errors and keep the evidence.' "$direct" \
+    "direct-PR DOD must require end-to-end verification with evidence before opening"
+  pass "fm-brief.sh: PR bodies are written separately from --intent and verified before opening"
+}
+
 test_worker_role_scope() {
   local kind home brief
   home="$TMP_ROOT/worker-role"
@@ -1060,6 +1118,8 @@ test_home_brief_include_is_appended_last() {
   pass "fm-brief.sh: the home brief include lands last on ship and scout, verbatim, and fails closed"
 }
 
+test_pr_standards_in_every_ship_brief
+test_pr_standards_keep_intent_out_of_the_pr_body
 test_worker_role_scope
 test_script_parses
 test_no_heredoc_in_command_substitution

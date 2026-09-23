@@ -345,8 +345,10 @@ hash_pane() {
 # verdict returns 0: idle, unknown, and dead all return 1, so a converted
 # adapter whose semantic state is missing, malformed, stale, or unverified is
 # treated as not-provably-working and surfaces rather than being absorbed.
-# <tail40> is the same bounded capture already read for hashing and is
-# consumed only by the Grok-scoped fallback inside the contract.
+# <tail40> is the same bounded capture already read for hashing and is passed
+# into the contract's harness-scoped rendered-text checks: the Grok/Rovo/AGY
+# busy fallbacks and the launch-prompt backstop that keeps a launch pinned at
+# its fm-spawn seed from reading as provably working.
 window_is_busy() {  # <window> <tail40>
   local w=$1 tail40=$2 task meta verdict
   task=$(window_to_task "$w" "$STATE")
@@ -1708,6 +1710,10 @@ age_of() {  # seconds since file mtime; "due immediately" if missing
 # -nt comparison.
 # Status signatures include observable file and readability state, while turn-end
 # markers retain their size-and-mtime signature.
+# A status file is asked the wider wake question instead, so it also stays quiet
+# when the only bytes it grew past the classified offset are this home's own
+# bookkeeping appends; fm_wake_signal_seen_current (bin/fm-wake-lib.sh) owns that
+# rule and every other signature change still reads as unreported.
 # Pure read: prints one "<seen-file>\t<sig>\t<file>" line per changed file.
 # The caller records reported state only after surfacing or intentional absorption,
 # and commits a status classification position only after a successful span read.
